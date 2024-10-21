@@ -1,0 +1,185 @@
+import pandas as pd
+import gzip
+import json
+
+def read_100(file_path):
+    file = file_path
+
+    data = []
+
+    # Open the compressed .jsonl.gz file
+    with gzip.open(file, 'rt', encoding='utf-8') as fp:
+        for line in fp:
+            # Parse each line (JSON object) and append it to the data list
+            data.append(json.loads(line.strip()))
+
+    df = pd.DataFrame(data)
+    return df
+
+Amazon_Fashion_100=read_100("Amazon_Fashion_100.jsonl.gz")
+meta_Amazon_Fashion_100=read_100("meta_Amazon_Fashion_100.jsonl.gz")
+
+import pandas as pd
+import numpy as np
+import nltk
+from nltk.corpus import stopwords
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LinearRegression, Ridge, SGDRegressor
+from sklearn.metrics import make_scorer, mean_absolute_error, mean_squared_error, r2_score, accuracy_score, f1_score, \
+    precision_score, recall_score
+from sklearn.model_selection import cross_val_score, KFold
+from scipy.sparse import hstack
+import lightgbm as lgb
+import swifter
+import time
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.naive_bayes import MultinomialNB
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='lightgbm')
+
+def full_text_processing_and_model_evaluation(df):
+    # Basic processing
+    df['rating'].value_counts().sort_index()
+    df['binary_rating'] = df['rating'].apply(lambda x: 1 if x >= 4 else 0)
+    df['verified_purchase'] = df['verified_purchase'].astype(int)
+    df = df[['title', 'text', 'verified_purchase', 'rating', 'binary_rating']]
+
+    # Download and setup NLTK resources
+    nltk.download('stopwords')
+    nltk.download('punkt')
+    stop_words = set(stopwords.words('english'))
+
+    # Text preprocessing function
+    def preprocess_text(text):
+        tokens = nltk.word_tokenize(text.lower())
+        tokens = [word for word in tokens if word.isalpha() and word not in stop_words]
+        return ' '.join(tokens)
+
+    # Apply text preprocessing
+    df['cleaned_text'] = df['text'].swifter.apply(preprocess_text)
+
+    # Define TF-IDF Vectorizers for title and text
+    vectorizer_title = TfidfVectorizer(max_features=1000, stop_words='english', ngram_range=(1, 2), min_df=3,
+                                       max_df=0.85)
+    vectorizer_text = TfidfVectorizer(max_features=5000, stop_words='english', ngram_range=(1, 2), min_df=3,
+                                      max_df=0.85)
+
+    # Transform title and text
+    X_title_tfidf = vectorizer_title.fit_transform(df['title'])
+    X_text_tfidf = vectorizer_text.fit_transform(df['cleaned_text'])
+
+    # Combine features into a single sparse matrix
+    X_combined = hstack([X_title_tfidf, X_text_tfidf, df[['verified_purchase']].values])
+
+    # Targets for regression and classification
+    y = df['rating']
+    y_binary = df['binary_rating']
+
+    # Define models for regression and classification
+
+    # Define custom scoring functions for cross-validation
+    scoring = {
+        'mae': make_scorer(mean_absolute_error),
+        'rmse': make_scorer(mean_squared_error, squared=False),  # RMSE
+        'r2': make_scorer(r2_score)
+    }
+
+
+    # Define a function to evaluate models using 5-fold cross-validation
+    def evaluate_model_cv(model, model_name, X, y, cv=5):
+        # Initialize cross-validation
+        kf = KFold(n_splits=cv, shuffle=True, random_state=42)
+
+        # Calculate mean and std for each metric
+        mae_scores = cross_val_score(model, X, y, cv=kf, scoring=scoring['mae'])
+        rmse_scores = cross_val_score(model, X, y, cv=kf, scoring=scoring['rmse'])
+        r2_scores = cross_val_score(model, X, y, cv=kf, scoring=scoring['r2'])
+
+        # Return results with mean and standard deviation
+        return {
+            'Model': model_name,
+            'MAE Mean': np.mean(mae_scores), 'MAE Std': np.std(mae_scores),
+            'RMSE Mean': np.mean(rmse_scores), 'RMSE Std': np.std(rmse_scores),
+            'R² Mean': np.mean(r2_scores), 'R² Std': np.std(r2_scores)
+        }
+
+
+    # Define the models
+    models = {
+        'LightGBM': lgb.LGBMRegressor(n_estimators=100, max_depth=10, random_state=42,force_row_wise=True),
+        'Linear Regression': LinearRegression(),
+        'Ridge Regression': Ridge(alpha=1.0),
+        'SGDRegressor': SGDRegressor(max_iter=1000, tol=1e-3, penalty='l2', random_state=42)
+    }
+
+    # Initialize an empty list to store the evaluation results
+    evaluation_results_cv = []
+
+    # Evaluate each model using cross-validation
+    for model_name, model in models.items():
+        results = evaluate_model_cv(model, model_name, X_combined, y)
+        evaluation_results_cv.append(results)
+
+    # Print the results
+    print("Model Evaluation Metrics (5-Fold Cross-Validation):")
+    for result in evaluation_results_cv:
+        print(f"{result['Model']} - MAE: {result['MAE Mean']:.4f} (±{result['MAE Std']:.4f}), "
+              f"RMSE: {result['RMSE Mean']:.4f} (±{result['RMSE Std']:.4f}), "
+              f"R²: {result['R² Mean']:.4f} (±{result['R² Std']:.4f})")
+
+    scoring = {
+        'accuracy': make_scorer(accuracy_score),
+        'f1': make_scorer(f1_score, average='macro'),
+        'precision': make_scorer(precision_score, average='macro'),
+        'recall': make_scorer(recall_score, average='macro')
+    }
+
+    # Function to evaluate classifiers using 5-fold cross-validation
+    def evaluate_classifier_cv(model, model_name, X, y, cv=5):
+        # Initialize cross-validation
+        kf = KFold(n_splits=cv, shuffle=True, random_state=42)
+        start_time = time.time()
+        # Calculate mean and std for each metric
+        accuracy_scores = cross_val_score(model, X, y, cv=kf, scoring=scoring['accuracy'])
+        f1_scores = cross_val_score(model, X, y, cv=kf, scoring=scoring['f1'])
+        precision_scores = cross_val_score(model, X, y, cv=kf, scoring=scoring['precision'])
+        recall_scores = cross_val_score(model, X, y, cv=kf, scoring=scoring['recall'])
+        end_time = time.time()
+        elapsed_time = end_time - start_time  # Total running time
+        # Return results with mean and standard deviation
+        return {
+            'Model': model_name,
+            'Accuracy Mean': np.mean(accuracy_scores), 'Accuracy Std': np.std(accuracy_scores),
+            'F1 Score Mean': np.mean(f1_scores), 'F1 Score Std': np.std(f1_scores),
+            'Precision Mean': np.mean(precision_scores), 'Precision Std': np.std(precision_scores),
+            'Recall Mean': np.mean(recall_scores), 'Recall Std': np.std(recall_scores),
+            'Time Taken (s)': elapsed_time
+        }
+
+    # Define the models
+    classifiers = {
+        'Logistic Regression': LogisticRegression(max_iter=1000, random_state=42),
+        'Random Forest': RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1),
+        'Naive Bayes': MultinomialNB(),
+        'LightGBM': lgb.LGBMClassifier(n_estimators=100, max_depth=10, random_state=42)
+    }
+
+    # Initialize an empty list to store the evaluation results
+    evaluation_results_clf = []
+
+    # Evaluate each classifier using cross-validation
+    for model_name, model in classifiers.items():
+        results = evaluate_classifier_cv(model, model_name, X_combined, y_binary)
+        evaluation_results_clf.append(results)
+
+    # Print the results
+    print("Classifier Evaluation Metrics (5-Fold Cross-Validation):")
+    for result in evaluation_results_clf:
+        print(f"{result['Model']} - Accuracy: {result['Accuracy Mean']:.3f} (±{result['Accuracy Std']:.3f}), "
+              f"F1 Score: {result['F1 Score Mean']:.3f} (±{result['F1 Score Std']:.3f}), "
+              f"Precision: {result['Precision Mean']:.3f} (±{result['Precision Std']:.3f}), "
+              f"Recall: {result['Recall Mean']:.3f} (±{result['Recall Std']:.3f}),"
+              f"Time Taken: {result['Time Taken (s)']:.2f} seconds")
+
+full_text_processing_and_model_evaluation(Amazon_Fashion_100)
