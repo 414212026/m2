@@ -1,0 +1,317 @@
+
+import numpy as np
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import TruncatedSVD, PCA
+from sklearn.cluster import KMeans, AgglomerativeClustering, DBSCAN
+from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
+import matplotlib.pyplot as plt
+from scipy.sparse import hstack
+# Prepare data
+# orig_df = pd.read_pickle('product_df_sampled.pkl')
+import pandas as pd
+import gzip
+import json
+
+def read_100(file_path):
+    file = file_path
+
+    data = []
+
+    # Open the compressed .jsonl.gz file
+    with gzip.open(file, 'rt', encoding='utf-8') as fp:
+        for line in fp:
+            # Parse each line (JSON object) and append it to the data list
+            data.append(json.loads(line.strip()))
+
+    df = pd.DataFrame(data)
+    return df
+
+orig_df=read_100("meta_Amazon_Fashion_100.jsonl.gz")
+df = orig_df[['title', 'average_rating', 'rating_number', 'price', 'features', 'description','bought_together']]
+df = df.copy()
+df.loc[:, 'features'] = df['features'].apply(lambda x: np.nan if isinstance(x, list) and len(x) == 0 else (' '.join(x) if isinstance(x, list) else x))
+df.loc[:, 'description'] = df['description'].apply(lambda x: np.nan if isinstance(x, list) and len(x) == 0 else (' '.join(x) if isinstance(x, list) else x))
+df['features'].fillna('', inplace=True)
+vectorizer = TfidfVectorizer(max_features=1000, stop_words='english')
+X_text_title = vectorizer.fit_transform(df['title'])
+X_text_features = vectorizer.fit_transform(df['features'])
+scaler = StandardScaler()
+X_numerical = scaler.fit_transform(df[['average_rating', 'rating_number']])
+from scipy.sparse import hstack
+X_combined = hstack([X_numerical, X_text_title,X_text_features])
+
+# 1. Kmeans
+n_clusters = 5  # You can adjust this number based on your needs
+kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+df['Kmeans_cluster'] = kmeans.fit_predict(X_combined)
+
+# 2. PCA Model + Kmeans
+X_combined_dense = X_combined.todense()
+pca = PCA(n_components=50)
+X_pca_reduced = pca.fit_transform(X_combined_dense)
+n_clusters = 5
+kmeans_pca = KMeans(n_clusters=n_clusters, random_state=42)
+df['PCA_kmeans_cluster'] = kmeans_pca.fit_predict(X_pca_reduced)
+
+# 3. Hierarchical Clustering
+svd = TruncatedSVD(n_components=50)  # Reduce to 50 components (adjust as needed)
+X_reduced = svd.fit_transform(X_combined)
+n_clusters = 5  # Set the desired number of clusters
+hierarchical_clustering = AgglomerativeClustering(n_clusters=n_clusters, linkage='ward')
+df['hierarchical_cluster'] = hierarchical_clustering.fit_predict(X_reduced)
+
+# 4. DBSCAN
+svd = TruncatedSVD(n_components=50)  # Reduce to 50 components (adjust as needed)
+X_reduced  = svd.fit_transform(X_combined)
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X_reduced)
+dbscan = DBSCAN(eps=4,min_samples=50)
+df['DBSCAN_cluster'] = dbscan.fit_predict(X_scaled)
+
+
+kmeans_sh_score = silhouette_score(X_combined.toarray(), df['Kmeans_cluster'])
+pca_kmeans_sh_score = silhouette_score(X_combined.toarray(), df['PCA_kmeans_cluster'])
+hierarchical_sh_score = silhouette_score(X_combined.toarray(), df['hierarchical_cluster'])
+# DBSCAN_sh_score = silhouette_score(X_combined.toarray(), df['DBSCAN_cluster'])
+
+print(f"Kmeans Silhouette Index: {kmeans_sh_score:.3f}")
+print(f"PCA + Kmeans Silhouette Index: {pca_kmeans_sh_score:.3f}")
+print(f"Hierarchical Cluster Silhouette Index: {hierarchical_sh_score:.3f}")
+# print(f"DBSCAN Silhouette Index: {DBSCAN_sh_score:.3f}")
+#
+# Kmeans Silhouette Index: 0.124
+# PCA + Kmeans Silhouette Index: 0.125
+# Hierarchical Cluster Silhouette Index: 0.096
+# DBSCAN Silhouette Index: -0.057
+
+kmeans_db_score = davies_bouldin_score(X_combined.toarray(), df['Kmeans_cluster'])
+pca_kmeans_db_score = davies_bouldin_score(X_combined.toarray(), df['PCA_kmeans_cluster'])
+hierarchical_db_score = davies_bouldin_score(X_combined.toarray(), df['hierarchical_cluster'])
+# DBSCAN_db_score = davies_bouldin_score(X_combined.toarray(), df['DBSCAN_cluster'])
+print(f"Kmeans Davies-Bouldin Index: {kmeans_db_score:.3f}")
+print(f"PCA + Kmeans Davies-Bouldin Index: {pca_kmeans_db_score:.3f}")
+print(f"Hierarchical Cluster Davies-Bouldin Index: {hierarchical_db_score:.3f}")
+# print(f"DBSCAN Davies-Bouldin Index: {DBSCAN_db_score:.3f}")
+
+# Kmeans Davies-Bouldin Index: 1.521
+# PCA + Kmeans Davies-Bouldin Index: 1.526
+# Hierarchical Cluster Davies-Bouldin Index: 1.678
+# DBSCAN Davies-Bouldin Index: 4.572
+
+kmeans_ch_score = calinski_harabasz_score(X_combined.toarray(), df['Kmeans_cluster'])
+pca_kmeans_ch_score = calinski_harabasz_score(X_combined.toarray(), df['PCA_kmeans_cluster'])
+hierarchical_ch_score = calinski_harabasz_score(X_combined.toarray(), df['hierarchical_cluster'])
+# DBSCAN_ch_score = calinski_harabasz_score(X_combined.toarray(), df['DBSCAN_cluster'])
+print(f"Kmeans Calinski-Harabasz Index: {kmeans_ch_score:.3f}")
+print(f"PCA + Kmeans Calinski-Harabasz Index: {pca_kmeans_ch_score:.3f}")
+print(f"Hierarchical Cluster Calinski-Harabasz Index: {hierarchical_ch_score:.3f}")
+# print(f"DBSCAN Calinski-Harabasz Index: {DBSCAN_ch_score:.3f}")
+#
+# Kmeans Calinski-Harabasz Index: 3487.835
+# PCA + Kmeans Calinski-Harabasz Index: 3487.574
+# Hierarchical Cluster Calinski-Harabasz Index: 3244.498
+# DBSCAN Calinski-Harabasz Index: 50.135
+
+# KMeans sensitivity analysis
+
+# Reduce dimensions before clustering if necessary
+svd = TruncatedSVD(n_components=50)  # Adjust the number of components
+X_reduced = svd.fit_transform(X_combined)
+n_clusters_range = range(3, 8)  # Clusters from 3 to 7
+silhouette_scores_kmeans = []
+db_scores_kmeans = []
+ch_scores_kmeans = []
+for n_clusters in n_clusters_range:
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+    labels = kmeans.fit_predict(X_reduced)
+
+    # Attempt to use sparse input directly where possible
+    try:
+        silhouette = silhouette_score(X_reduced, labels)
+        db_index = davies_bouldin_score(X_reduced, labels)
+        ch_index = calinski_harabasz_score(X_reduced, labels)
+    except Exception as e:
+        print(f"Error calculating scores for {n_clusters} clusters: {e}")
+
+    silhouette_scores_kmeans.append(silhouette)
+    db_scores_kmeans.append(db_index)
+    ch_scores_kmeans.append(ch_index)
+
+    print(
+        f"Scores for {n_clusters} clusters - Silhouette: {silhouette:.2f}, Davies-Bouldin: {db_index:.2f}, Calinski-Harabasz: {ch_index:.2f}")
+# Scores for 3 clusters - Silhouette: 0.42, Davies-Bouldin: 0.73, Calinski-Harabasz: 8643.35
+# Scores for 4 clusters - Silhouette: 0.45, Davies-Bouldin: 0.69, Calinski-Harabasz: 8286.51
+# Scores for 5 clusters - Silhouette: 0.26, Davies-Bouldin: 0.96, Calinski-Harabasz: 8386.32
+# Scores for 6 clusters - Silhouette: 0.26, Davies-Bouldin: 0.91, Calinski-Harabasz: 7722.61
+# Scores for 7 clusters - Silhouette: 0.18, Davies-Bouldin: 1.19, Calinski-Harabasz: 7276.10
+#
+#
+# fig, ax1 = plt.subplots()
+#
+# # First axis
+# color = 'tab:blue'
+# ax1.set_xlabel('Cluster value')
+# ax1.set_ylabel('Silhouette, Davies-Bouldin', color=color)
+# line1, = ax1.plot(n_clusters_range, silhouette_scores_kmeans, label='Silhouette Score', color='tab:blue', marker='o')
+# line2, = ax1.plot(n_clusters_range, db_scores_kmeans, label='Davies-Bouldin Score', color='tab:green', marker='o')
+# ax1.tick_params(axis='y', labelcolor=color)
+#
+# # Second axis
+# ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
+# color = 'tab:red'
+# ax2.set_ylabel('Calinski-Harabasz', color=color)  # we already handled the x-label with ax1
+# line3, = ax2.plot(n_clusters_range, ch_scores_kmeans, label='Calinski-Harabasz Score', color=color, marker='x')
+# ax2.tick_params(axis='y', labelcolor=color)
+#
+# # Added a legend that combines both axes
+# lines = [line1, line2, line3]
+# labels = [l.get_label() for l in lines]
+# ax1.legend(lines, labels, loc='upper left')
+#
+# fig.tight_layout()  # otherwise the right y-label is slightly clipped
+# plt.title('Kmeans Sensitivity Analysis with Dual Y-Axis')
+# plt.grid(True)
+# plt.show()
+
+# # DBSCAN sensitivity analysis
+# eps_range = np.arange(0.5, 6, 0.5)
+# silhouette_scores_dbscan = []
+# db_scores_dbscan = []
+# ch_scores_dbscan = []
+#
+# for eps in eps_range:
+#     dbscan = DBSCAN(eps=eps, min_samples=50)
+#     labels = dbscan.fit_predict(X_reduced)
+#
+#     if len(set(labels)) > 1:  # Ensure more than one cluster exists
+#         try:
+#             # Convert to dense only if necessary and only for the required metrics
+#             silhouette = silhouette_score(X_reduced, labels) if len(np.unique(labels)) > 1 else None
+#             db_index = davies_bouldin_score(X_reduced, labels)
+#             ch_index = calinski_harabasz_score(X_reduced, labels)
+#         except Exception as e:
+#             print(f"Error calculating scores for eps {eps}: {e}")
+#             silhouette, db_index, ch_index = None, None, None
+#
+#         silhouette_scores_dbscan.append(silhouette)
+#         db_scores_dbscan.append(db_index)
+#         ch_scores_dbscan.append(ch_index)
+#     else:
+#         silhouette_scores_dbscan.append(None)
+#         db_scores_dbscan.append(None)
+#         ch_scores_dbscan.append(None)
+#
+#     # Display results
+#     print(f"DBSCAN with eps {eps} - Silhouette: {silhouette}, Davies-Bouldin: {db_index}, Calinski-Harabasz: {ch_index}")
+# #
+# DBSCAN with eps 0.5 - Silhouette: -0.09189906278587433, Davies-Bouldin: 2.1222031220509856, Calinski-Harabasz: 134.37208390267375
+# DBSCAN with eps 1.0 - Silhouette: 0.827604377784692, Davies-Bouldin: 0.7027598643693393, Calinski-Harabasz: 3583.2574887246997
+# DBSCAN with eps 1.5 - Silhouette: 0.8774713524910982, Davies-Bouldin: 0.6601784324289003, Calinski-Harabasz: 4045.068944095364
+# DBSCAN with eps 2.0 - Silhouette: 0.8968712210594161, Davies-Bouldin: 0.6531267368448381, Calinski-Harabasz: 4143.092976608654
+# DBSCAN with eps 2.5 - Silhouette: 0.9126884090837823, Davies-Bouldin: 0.6308820241695776, Calinski-Harabasz: 4219.678996017617
+# DBSCAN with eps 3.0 - Silhouette: 0.9363420069739385, Davies-Bouldin: 0.5025866154623806, Calinski-Harabasz: 4615.635037174771
+# DBSCAN with eps 3.5 - Silhouette: 0.942366813785067, Davies-Bouldin: 0.42723645137229627, Calinski-Harabasz: 4809.9844609368665
+# DBSCAN with eps 4.0 - Silhouette: 0.9454421802263557, Davies-Bouldin: 0.3773239430691953, Calinski-Harabasz: 4901.2123541626015
+# DBSCAN with eps 4.5 - Silhouette: 0.9454421802263557, Davies-Bouldin: 0.3773239430691953, Calinski-Harabasz: 4901.2123541626015
+# DBSCAN with eps 5.0 - Silhouette: 0.9485620901911411, Davies-Bouldin: 0.3211001384463692, Calinski-Harabasz: 4981.900501154145
+
+#
+# fig, ax1 = plt.subplots()
+#
+# # First axis
+# color = 'tab:blue'
+# ax1.set_xlabel('EPS value')
+# ax1.set_ylabel('Silhouette, Davies-Bouldin', color=color)
+# line1, = ax1.plot(eps_range, silhouette_scores_dbscan, label='Silhouette Score', color='tab:blue', marker='o')
+# line2, = ax1.plot(eps_range, db_scores_dbscan, label='Davies-Bouldin Score', color='tab:green', marker='o')
+# ax1.tick_params(axis='y', labelcolor=color)
+#
+# # Second axis
+# ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
+# color = 'tab:red'
+# ax2.set_ylabel('Calinski-Harabasz', color=color)  # we already handled the x-label with ax1
+# line3, = ax2.plot(eps_range, ch_scores_dbscan, label='Calinski-Harabasz Score', color=color, marker='x')
+# ax2.tick_params(axis='y', labelcolor=color)
+#
+# # Added a legend that combines both axes
+# lines = [line1, line2, line3]
+# labels = [l.get_label() for l in lines]
+# ax1.legend(lines, labels, loc='upper left')
+#
+# fig.tight_layout()  # otherwise the right y-label is slightly clipped
+# plt.title('DBSCAN Sensitivity Analysis with Dual Y-Axis')
+# plt.grid(True)
+# plt.show()
+
+
+
+#
+# from sklearn.metrics import silhouette_samples, silhouette_score
+# import matplotlib.pyplot as plt
+# import matplotlib.cm as cm
+# import numpy as np
+#
+# def silhouette_plot(X, cluster_labels, model_name):
+#     n_clusters = len(set(cluster_labels))
+#     # The silhouette_score gives the average value for all the samples.
+#     silhouette_avg = silhouette_score(X, cluster_labels)
+#     # Compute the silhouette scores for each sample
+#     sample_silhouette_values = silhouette_samples(X, cluster_labels)
+#
+#     y_lower = 10
+#     fig, ax = plt.subplots()
+#     for i in range(n_clusters):
+#         # Aggregate the silhouette scores for samples belonging to
+#         # cluster i, and sort them
+#         ith_cluster_silhouette_values = sample_silhouette_values[cluster_labels == i]
+#         ith_cluster_silhouette_values.sort()
+#
+#         size_cluster_i = ith_cluster_silhouette_values.shape[0]
+#         y_upper = y_lower + size_cluster_i
+#
+#         color = cm.nipy_spectral(float(i) / n_clusters)
+#         ax.fill_betweenx(np.arange(y_lower, y_upper),
+#                          0, ith_cluster_silhouette_values,
+#                          facecolor=color, edgecolor=color, alpha=0.7)
+#
+#         # Label the silhouette plots with their cluster numbers at the middle
+#         ax.text(-0.05, y_lower + 0.5 * size_cluster_i, str(i))
+#
+#         y_lower = y_upper + 10  # 10 for the 0 samples gap between clusters
+#
+#     ax.set_title("The silhouette plot for the various clusters.")
+#     ax.set_xlabel("The silhouette coefficient values")
+#     ax.set_ylabel("Cluster label")
+#
+#     # The vertical line for average silhouette score of all the values
+#     ax.axvline(x=silhouette_avg, color="red", linestyle="--")
+#
+#     ax.set_yticks([])  # Clear the yaxis labels / ticks
+#     ax.set_xticks([-0.1, 0, 0.2, 0.4, 0.6, 0.8, 1])
+#
+#     plt.suptitle(("Silhouette analysis for " + model_name + " clustering on sample data "
+#                   "with n_clusters = %d" % n_clusters),
+#                  fontsize=14, fontweight='bold')
+#
+#     plt.show()
+#
+# from sklearn.manifold import TSNE
+#
+# def plot_tsne(X, labels, model_name):
+#     tsne = TSNE(n_components=2, random_state=42)
+#     X_tsne = tsne.fit_transform(X)
+#
+#     plt.figure(figsize=(8, 6))
+#     scatter = plt.scatter(X_tsne[:, 0], X_tsne[:, 1], c=labels, cmap='viridis', edgecolor='k', alpha=0.6)
+#     plt.colorbar(scatter)
+#     plt.title(f't-SNE visualization of {model_name} clusters')
+#     plt.xlabel('t-SNE feature 1')
+#     plt.ylabel('t-SNE feature 2')
+#     plt.grid(True)
+#     plt.show()
+#
+#
+# silhouette_plot(X_combined, df['Kmeans_cluster'].values, 'KMeans')
+# plot_tsne(X_combined, df['Kmeans_cluster'].values, 'KMeans')
